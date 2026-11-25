@@ -734,8 +734,7 @@ function accountStatus(s, now) {
   return { cls: '', tone: 'ok', label: '可用', cool };
 }
 
-// renderModelLocks 模型锁池：哪些模型不能用、锁了几个号、还要锁多久。后端已按
-// 「整池不可用 → 此刻没号 → 部分限流」排好序，这里只做展示（移植上游 PR #120）。
+// renderModelLocks 保留后端的模型锁池排序，并从同轮账号状态计算积分可选数。
 const ML_STATE = { locked: ['bad', '全池锁定'], starved: ['warn', '此刻无号'], partial: ['ok', '部分限流'] };
 /* fallbackTargetFor 查该 (域, 模型) 配置的降级目标（未配置 → 空串）。
    配置键既可能是裸名，也可能带 cn:/global: 前缀，查找顺序必须与网关侧
@@ -748,15 +747,31 @@ function fallbackTargetFor(model, realm) {
   const t = (overviewData && overviewData.model_fallback) || {};
   return (realm ? t[realm + ':' + bare] : '') || t[model] || t[bare] || '';
 }
-function renderModelLocks(rows) {
+function renderModelLocks(rows, accounts = [], limits = null) {
   const tb = $('mlBody');
   const list = Array.isArray(rows) ? rows : [];
   $('mlNote').textContent = list.length ? list.length + ' 个模型受限' : '';
   if (!list.length) {
-    setHTML(tb, '<tr><td colspan="8"><div class="empty">当前没有模型级限流 —— 所有模型均可选</div></td></tr>');
+    setHTML(tb, '<tr><td colspan="9"><div class="empty">当前没有模型级限流 —— 所有模型均可选</div></td></tr>');
     return;
   }
+  const now = Date.now();
+  const available = accounts.filter(s =>
+    accountStatus(s, now).label === '可用' &&
+    (s.credits > 0 || s.credits_total === -1));
   setHTML(tb, list.map(r => {
+    const limit = limits?.[r.realm];
+    const locked = new Set(accounts.filter(s => s.realm === r.realm && !s.disabled && !s.paused &&
+      (s.rate_limited_models || []).some(m => m.model === r.model)));
+    const candidates = available.filter(s => s.realm === r.realm && !locked.has(s));
+    // 旧状态可能包含仅供展示的限流台账，现有接口不标明具体条目。
+    let countNote = '';
+    if (locked.size !== r.locked) {
+      countNote = '账号限流明细与锁定账号数不一致';
+    } else if ((!Number.isInteger(limit) || limit < 0) && candidates.some(s => s.in_flight > 0)) {
+      countNote = '未读取到在途上限';
+    }
+    const withCredits = countNote ? '—' : candidates.filter(s => !(limit > 0 && s.in_flight >= limit)).length;
     const [cls, label] = ML_STATE[r.state] || ['', r.state || '—'];
     const unlock = r.unlock_at && !/^0001-/.test(r.unlock_at) ? fmtLocalDateTime(r.unlock_at) : '—';
     const fully = r.fully_unlock_at && !/^0001-/.test(r.fully_unlock_at) ? fmtLocalDateTime(r.fully_unlock_at) : '—';
@@ -771,6 +786,7 @@ function renderModelLocks(rows) {
       '<td>' + (r.realm === 'global' ? '国际版' : '国内版') + '</td>' +
       '<td><span class="tag ' + cls + '">' + label + '</span></td>' +
       '<td class="num">' + (r.servable || 0) + ' / ' + (r.total || 0) + '</td>' +
+      '<td class="num"' + (countNote ? ' title="' + esc(countNote) + '"' : '') + '>' + withCredits + '</td>' +
       '<td class="num">' + (r.locked || 0) + '</td>' +
       '<td class="num">' + esc(unlock) + '</td>' +
       '<td class="num">' + esc(fully) + '</td>' +
@@ -946,6 +962,7 @@ if ($('navUpdate')) $('navUpdate').onclick = () => {
 // overviewSig 上一次渲染用的账号、代理绑定与锁池快照（JSON 文本）。轮询每 5 秒一次，内容没变时
 // 跳过表格重渲染：重建 innerHTML 会丢掉行内焦点与悬停，29 个号就是每 5 秒抖一次。
 let overviewSig = '';
+let overviewLimits = null, loadingOverviewLimits = false;
 
 async function loadOverview(quiet) {
   try {
@@ -997,15 +1014,27 @@ async function loadOverview(quiet) {
     $('accNote').textContent = d.in_flight_full ? d.in_flight_full + ' 个账号在途占满' : '';
     const up = Math.floor(d.uptime_sec);
     $('subMeta').textContent = '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
-    // 只在载荷真变了才重建两张表（见 overviewSig 注释）。
-    const sig = JSON.stringify([d.accounts || [], d.model_locks || [], d.proxy_pool?.bindings || null]);
+    const accounts = d.accounts || [];
+    const sig = JSON.stringify([accounts, d.model_locks || [], d.proxy_pool?.bindings || null]);
     if (sig !== overviewSig) {
       overviewSig = sig;
-      renderAccounts(d.accounts || []);
-      renderModelLocks(d.model_locks);
+      renderAccounts(accounts);
+      renderModelLocks(d.model_locks, accounts, overviewLimits);
     }
     // 到期提醒随首页统计一起刷新：只用响应里已有的最早到期快照，零上游请求。
     renderExpirySnapshot(d);
+    // 并发配置只影响新增列。先更新总览，配置返回后用最新账号状态补算。
+    if (!loadingOverviewLimits && d.model_locks?.length && accounts.some(s => s.in_flight > 0)) {
+      loadingOverviewLimits = true;
+      const config = await api('config').catch(() => null);
+      loadingOverviewLimits = false;
+      const pool = config?.config?.pool;
+      const limits = pool ? { cn: pool.max_in_flight, global: pool.max_in_flight_global || pool.max_in_flight } : null;
+      if (overviewLimits?.cn !== limits?.cn || overviewLimits?.global !== limits?.global) {
+        overviewLimits = limits;
+        renderModelLocks(overviewData.model_locks, overviewData.accounts || [], limits);
+      }
+    }
   } catch (e) {
     // 轮询（quiet）时也留痕：渲染异常被静默吞掉的表现就是「统计正常、表格空白」
     console.error('[panel] 首页刷新失败', e);
