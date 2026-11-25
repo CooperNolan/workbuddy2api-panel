@@ -286,6 +286,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
    在 header 里会把标题挤成两行、把"近 3 天"这类短选项拉成一整条。 */
 .box > header select, .box > header input { width: auto; }
 .box > header h3 { white-space: nowrap; }
+.box > header.account-toolbar { flex-wrap: wrap; }
 .box .pad { padding: 17px; }
 
 /* ── 账号表（签名元素：健康色条 + 积分量条）───────────────────────── */
@@ -1086,13 +1087,14 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       </div>
 
       <div class="box">
-        <header>
+        <header class="account-toolbar">
           <h3>账号池</h3>
           <span class="vtabs" id="accRealmTabs">
             <button type="button" data-realm="all" class="on">全部<span class="cnt" id="accCntAll">0</span></button>
             <button type="button" data-realm="cn">国内版<span class="cnt" id="accCntCn">0</span></button>
             <button type="button" data-realm="global">国际版<span class="cnt" id="accCntGlobal">0</span></button>
           </span>
+          <select id="accStatusFilter" class="xs" aria-label="按状态筛选"><option value="">全部状态</option></select>
           <span class="grow"></span>
           <span class="note" id="accNote"></span>
           <!-- 分组筛选（issue #159）：账号的分组标签是服务端字段，这里只做筛选；
@@ -1102,6 +1104,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <button class="xs" type="button" data-gact="checkin">组内签到</button>
             <button class="xs" type="button" data-gact="pause">组内暂停选号</button>
             <button class="xs" type="button" data-gact="resume">组内恢复选号</button>
+            <span class="note" id="accGroupScope" hidden>状态筛选仅过滤列表，组内批量按分区和分组执行。</span>
           </span>
           <button class="xs" id="btnRemarks" title="批量编辑账号备注（本机）与分组（服务端）">备注 / 分组</button>
           <button class="xs" id="btnAccExport" title="导出全部账号凭证（JSON，含 token，可直接导入另一个实例；不含暂停/禁用/分组这类运行态）">导出账号</button>

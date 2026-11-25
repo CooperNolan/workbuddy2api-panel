@@ -520,10 +520,9 @@ setTimeout(() => {
 /* ── 账号池 ───────────────────────────────────────────────────────── */
 let accRealmFilter = 'all';
 let lastAccountsList = [];
-/* 分组筛选（issue #159）：'' = 全部分组。lastVisibleAccounts 是当前表格真正渲染的行，
-   「组内批量」只对它生效——作用域与用户眼前看到的行一致，不会误伤被筛掉的账号。 */
+// 分组筛选（issue #159）：'' = 全部分组。组内批量依据分区和分组。
 let accGroupFilter = '';
-let lastVisibleAccounts = [];
+let groupBatchAccounts = [];
 
 /* syncGroupFilter 按当前账号列表重建分组下拉（组是自由标签，没有独立的组表可查）。
    选中值不在新列表里就退回「全部分组」——否则筛到一个已清空的组会看到永远空表。 */
@@ -568,14 +567,35 @@ function renderAccounts(list) {
   if (accGroupFilter) {
     filtered = filtered.filter(s => (s.group || '') === accGroupFilter);
   }
-  lastVisibleAccounts = filtered;
+  groupBatchAccounts = filtered;
+  const now = Date.now();
+  const statuses = new Map(lastAccountsList.map(s => [s, accountStatus(s, now)]));
+  const statusSelect = $('accStatusFilter');
+  const selectedStatus = statusSelect?.value || '';
+  if (statusSelect) {
+    const labels = new Set(Array.from(statuses.values(), s => s.label));
+    if (selectedStatus) labels.add(selectedStatus);
+    const counts = new Map();
+    for (const account of filtered) {
+      const { label } = statuses.get(account);
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    setHTML(statusSelect, '<option value="">全部状态 (' + filtered.length + ')</option>' +
+      [...labels].sort((a, b) => a.localeCompare(b, 'zh')).map(label =>
+        '<option value="' + esc(label) + '">' + esc(label) + ' (' + (counts.get(label) || 0) + ')</option>').join(''));
+    statusSelect.value = selectedStatus;
+  }
+  if (selectedStatus) filtered = filtered.filter(s => statuses.get(s).label === selectedStatus);
   // 组内批量只在「筛到某一组」时才露出来：全部分组下这几个按钮等于第二个「全部签到」，
   // 白占位还容易点错作用域。
   if ($('accGroupActions')) $('accGroupActions').hidden = !accGroupFilter;
+  if ($('accGroupScope')) $('accGroupScope').hidden = !selectedStatus;
 
   if (!filtered.length) {
     if (!total) {
       setHTML(tb, '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>');
+    } else if (selectedStatus) {
+      setHTML(tb, '<tr><td colspan="9"><div class="empty"><div class="big">当前筛选条件下没有匹配的账号</div></div></td></tr>');
     } else if (accGroupFilter) {
       setHTML(tb, '<tr><td colspan="9"><div class="empty"><div class="big">分组「' + esc(accGroupFilter) + '」下没有账号</div>在「备注」里给账号填上分组后就会出现在这里</div></td></tr>');
     } else if (accRealmFilter === 'cn') {
@@ -589,28 +609,17 @@ function renderAccounts(list) {
   const maxCred = Math.max(1, ...filtered.map(s => s.credits || 0));
   // 「探活」是冻结态专属动作，占独立槽位；整表没有冻结账号时连那一列都不占，
   // 否则中间会空出一条无意义的缝。判定式与行内 cool 同源（只看是否 > 0）。
-  const nowF = Date.now();
-  const anyFrozen = filtered.some(s => s.disabled || Math.max(s.cool_remaining_sec || 0,
-    (new Date(s.breaker_until || 0) - nowF) / 1000, (new Date(s.degrade_until || 0) - nowF) / 1000) > 0);
-  setHTML(tb, filtered.map(s => {
-    const bl = (new Date(s.breaker_until || 0) - Date.now()) / 1000;
-    const dg = (new Date(s.degrade_until || 0) - Date.now()) / 1000;
-    const cool = Math.max(s.cool_remaining_sec || 0, bl > 0 ? bl : 0, dg > 0 ? dg : 0);
-    let cls = '', tag;
-    if (s.disabled) { cls = 'off'; tag = '<span class="tag bad">已禁用</span>'; }
-    // 暂停选号：与禁用同属「不可选」，但照常保号（吸收上游 fd835df）
-    else if (s.paused) { cls = 'off'; tag = '<span class="tag warn">已暂停选号</span>'; }
-    else if (cool > 0) {
-      cls = 'cool';
-      const kind = bl > Math.max(s.cool_remaining_sec || 0, dg > 0 ? dg : 0) ? '熔断'
-        : (dg > (s.cool_remaining_sec || 0) ? '连败降权' : (s.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'));
-      tag = '<span class="tag warn">' + kind + ' · ' + dur(cool) + '</span>';
-    }
-    else if (s.reserve_blocked) { cls = 'cool'; tag = '<span class="tag warn">保留积分</span>'; }
-    // 会话疑似失效（12153 连续计数已 >0、还没到禁用阈值）：上游已判死、号还留在池里。
-    // 此前这种中间态完全不可见，面板照样打「可用」（issue #215 复盘）。
-    else if (s.session_dead_fails > 0) { cls = 'cool'; tag = '<span class="tag warn">疑似登录失效 · 待重登</span>'; }
-    else tag = '<span class="tag ok">可用</span>' + (s.in_flight ? '' : '');
+  const anyFrozen = filtered.some(s => s.disabled || statuses.get(s).cool > 0);
+  const sortedAccounts = filtered.slice().sort((a, b) => {
+    const aName = a.nickname || '';
+    const bName = b.nickname || '';
+    if (Boolean(aName) !== Boolean(bName)) return aName ? -1 : 1;
+    return aName.localeCompare(bName, 'zh', { numeric: true }) || a.uid.localeCompare(b.uid);
+  });
+  setHTML(tb, sortedAccounts.map(s => {
+    const { cls, tone, label, cool } = statuses.get(s);
+    const tag = '<span class="tag ' + tone + '">' + label +
+      (cls === 'cool' && cool > 0 ? ' · ' + dur(cool) : '') + '</span>';
     // 禁用原因分两行：类别+时长（谁来处置、多久了）/ 原始 reason（细节）。
     // 不分行的话「上游封禁 · 3 天前」和一段长 reason 挤在同一行，扫视时读不出重点。
     const dk = s.disabled ? disabledKind(s.reason) : null;
@@ -704,6 +713,25 @@ function renderAccounts(list) {
       ].filter(html => html !== null).map(html => html || '<span class="slot" aria-hidden="true"></span>').join('') +
       '</div></td></tr>';
   }).join(''));
+}
+
+function accountStatus(s, now) {
+  const bl = (new Date(s.breaker_until || 0) - now) / 1000;
+  const dg = (new Date(s.degrade_until || 0) - now) / 1000;
+  const cool = Math.max(s.cool_remaining_sec || 0, bl > 0 ? bl : 0, dg > 0 ? dg : 0);
+  if (s.disabled) return { cls: 'off', tone: 'bad', label: '已禁用', cool };
+  // 暂停选号：与禁用同属「不可选」，但照常保号（吸收上游 fd835df）
+  if (s.paused) return { cls: 'off', tone: 'warn', label: '已暂停选号', cool };
+  if (cool > 0) {
+    const label = bl > Math.max(s.cool_remaining_sec || 0, dg > 0 ? dg : 0) ? '熔断'
+      : (dg > (s.cool_remaining_sec || 0) ? '连败降权' : (s.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'));
+    return { cls: 'cool', tone: 'warn', label, cool };
+  }
+  if (s.reserve_blocked) return { cls: 'cool', tone: 'warn', label: '保留积分', cool };
+  // 会话疑似失效（12153 连续计数已 >0、还没到禁用阈值）：上游已判死、号还留在池里。
+  // 此前这种中间态完全不可见，面板照样打「可用」（issue #215 复盘）。
+  if (s.session_dead_fails > 0) return { cls: 'cool', tone: 'warn', label: '疑似登录失效 · 待重登', cool };
+  return { cls: '', tone: 'ok', label: '可用', cool };
 }
 
 // renderModelLocks 模型锁池：哪些模型不能用、锁了几个号、还要锁多久。后端已按
@@ -1096,7 +1124,10 @@ if ($('accGroupFilter')) {
     renderAccounts(lastAccountsList);
   };
 }
-/* 组内批量（issue #159）：作用域 = 当前表格里可见的行（lastVisibleAccounts），
+if ($('accStatusFilter')) {
+  $('accStatusFilter').onchange = () => renderAccounts(lastAccountsList);
+}
+/* 组内批量（issue #159）：作用域由当前分区和分组决定，
    逐号打已有的单号接口——不新增批量端点，也不改调度器。签到跳过企业版/静态 Key
    与已禁用号：它们的签到端点注定 4xx，统计里不该算失败。 */
 const GROUP_ACT = {
@@ -1110,7 +1141,7 @@ if ($('accGroupActions')) {
     if (!b) return;
     const act = GROUP_ACT[b.dataset.gact];
     if (!act) return;
-    const targets = lastVisibleAccounts.filter(act.ok);
+    const targets = groupBatchAccounts.filter(act.ok);
     if (!targets.length) { toast('当前分组里没有需要「' + act.verb + '」的账号', 'warn'); return; }
     // 恢复选号把号推回流量池、暂停选号把它撤出来，都影响在线请求，先确认再动手。
     if (b.dataset.gact !== 'checkin' &&
