@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,8 +23,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("proxy not found")
-	ErrBound    = errors.New("proxy is bound to accounts; remove bindings first")
+	ErrNotFound       = errors.New("proxy not found")
+	ErrBound          = errors.New("proxy is bound to accounts; remove bindings first")
+	ErrNoHealthyProxy = errors.New("no healthy proxy available")
 )
 
 // Error identifies a route failure without exposing proxy credentials.
@@ -530,6 +532,57 @@ func (m *Manager) Bind(uid string, b Binding) error {
 }
 
 func (m *Manager) Unbind(uid string) error { return m.Bind(uid, Binding{Mode: "random"}) }
+
+// AssignUnbound 为未指定出口的账号分配固定代理，accounts 是当前账号的 UID 到域的映射。
+func (m *Manager) AssignUnbound(accounts map[string]string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var unbound []string
+	counts := make(map[string]int)
+	for uid, realm := range accounts {
+		b, bound := m.data.Bindings[uid]
+		if !bound {
+			b = m.data.Realms[realmKey(realm)]
+		}
+		switch b.Mode {
+		case "fixed":
+			counts[b.ProxyID]++
+		case "", "random":
+			unbound = append(unbound, uid)
+		}
+	}
+	if len(unbound) == 0 {
+		return 0, nil
+	}
+
+	var available []string
+	for _, n := range m.data.Nodes {
+		if n.Enabled && m.health[n.ID].status == "healthy" {
+			available = append(available, n.ID)
+		}
+	}
+	if len(available) == 0 {
+		return 0, ErrNoHealthyProxy
+	}
+
+	slices.Sort(unbound)
+	d := m.copyLocked()
+	for _, uid := range unbound {
+		best := available[0]
+		for _, id := range available[1:] {
+			if counts[id] < counts[best] {
+				best = id
+			}
+		}
+		d.Bindings[uid] = Binding{Mode: "fixed", ProxyID: best}
+		counts[best]++
+	}
+	if err := m.commitLocked(d); err != nil {
+		return 0, err
+	}
+	return len(unbound), nil
+}
 
 // BindRealm 设置 realm 级默认出口（issue #39 P3）。random = 恢复「随机池」，
 // 等价于删掉这条默认；direct = 该域直连。账号级绑定优先于它。

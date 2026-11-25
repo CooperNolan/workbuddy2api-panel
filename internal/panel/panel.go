@@ -1318,8 +1318,7 @@ func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 	defer p.proxyAccountMu.Unlock()
 	// 与目录热重载串行化（issue #199 风险 3）：重载正在对齐池时插入一次移除，
 	// 可能出现「重载刚按扫描结果 upsert 回来、这边又删掉」的交错，两边都以为
-	// 自己是对的。锁序固定为 proxyAccountMu → reloadMu → pool.mu：全仓只有本函数
-	// 同时持有前两个（proxies.go 那两处只取 proxyAccountMu），不存在反向路径。
+	// 自己是对的。移除和批量分配代理的锁序均为 proxyAccountMu → reloadMu → pool.mu。
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 	uid := r.PathValue("uid")

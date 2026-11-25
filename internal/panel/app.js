@@ -943,7 +943,7 @@ if ($('navUpdate')) $('navUpdate').onclick = () => {
   $('updateNote').scrollIntoView({ block: 'center', behavior: 'smooth' });
 };
 
-// overviewSig 上一次渲染用的账号+锁池快照（JSON 文本）。轮询每 5 秒一次，内容没变时
+// overviewSig 上一次渲染用的账号、代理绑定与锁池快照（JSON 文本）。轮询每 5 秒一次，内容没变时
 // 跳过表格重渲染：重建 innerHTML 会丢掉行内焦点与悬停，29 个号就是每 5 秒抖一次。
 let overviewSig = '';
 
@@ -952,6 +952,7 @@ async function loadOverview(quiet) {
     const d = await api('overview');
     overviewData = d;
     if (d.proxy_pool) proxyData = d.proxy_pool;
+    if ($('btnAssignProxies')) $('btnAssignProxies').hidden = !d.proxy_pool;
     // 应用服务端透出的自动刷新间隔（首轮 overview 之后即生效；后续不变则不重建表）。
     if (d.poll_interval_sec !== undefined && d.poll_interval_sec !== null) {
       const sec = Number(d.poll_interval_sec);
@@ -997,7 +998,7 @@ async function loadOverview(quiet) {
     const up = Math.floor(d.uptime_sec);
     $('subMeta').textContent = '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
     // 只在载荷真变了才重建两张表（见 overviewSig 注释）。
-    const sig = JSON.stringify([d.accounts || [], d.model_locks || []]);
+    const sig = JSON.stringify([d.accounts || [], d.model_locks || [], d.proxy_pool?.bindings || null]);
     if (sig !== overviewSig) {
       overviewSig = sig;
       renderAccounts(d.accounts || []);
@@ -5980,6 +5981,17 @@ if ($('btnEventExport')) $('btnEventExport').onclick = () => {
 };
 
 const PROXY_STATES = { pending: ['warn', '待检测'], healthy: ['ok', '可用'], unhealthy: ['bad', '自动禁用'], disabled: ['bad', '手动禁用'] };
+if ($('btnAssignProxies')) $('btnAssignProxies').onclick = async () => {
+  const btn = $('btnAssignProxies');
+  btn.disabled = true;
+  try {
+    const { assigned } = await api('accounts/assign-proxies', { method: 'POST' });
+    toast(assigned ? '已为 ' + assigned + ' 个账号分配代理' : '没有待分配的账号', assigned ? 'ok' : 'warn');
+    await loadOverview(true);
+  } catch (e) { toast('代理分配失败：' + e.message, 'err'); }
+  finally { btn.disabled = false; }
+};
+
 function accountProxyHTML(uid) {
   if (!proxyData) return '';
   const binding = proxyData.bindings?.[uid] || { mode: 'random' };

@@ -53,6 +53,10 @@ vm.runInContext(src.slice(s, e), ctx);
   store.payload = Object.assign({}, base, { accounts: [{ uid: 'u1', credits: 6 }] });
   await ctx.loadOverview(true);
   assert.strictEqual(calls.accounts, 2, '载荷变化后必须重渲染');
+  store.payload = { ...store.payload, proxy_pool: { bindings: { u1: { mode: 'fixed', proxy_id: 'p1' } } } };
+  await ctx.loadOverview(true);
+  await ctx.loadOverview(true);
+  assert.strictEqual(calls.accounts, 3, '仅代理绑定变化也应刷新一次账号表');
   console.log(JSON.stringify({ accounts: calls.accounts, locks: calls.locks }));
 })().catch(err => { console.error(err); process.exit(1); });`
 
@@ -69,7 +73,7 @@ vm.runInContext(src.slice(s, e), ctx);
 	if err != nil {
 		t.Fatalf("node failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), `"accounts":2`) {
+	if !strings.Contains(string(out), `"accounts":3`) {
 		t.Fatalf("unexpected output: %s", out)
 	}
 }

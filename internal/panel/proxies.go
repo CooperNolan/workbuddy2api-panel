@@ -25,6 +25,7 @@ func (p *Panel) proxyRoutes() {
 	p.mux.HandleFunc("POST /panel/api/proxies/{id}/check", p.proxyCheck)
 	p.mux.HandleFunc("PUT /panel/api/proxies/health", p.proxyHealth)
 	p.mux.HandleFunc("PUT /panel/api/accounts/{uid}/proxy", p.accountProxy)
+	p.mux.HandleFunc("POST /panel/api/accounts/assign-proxies", p.assignAccountProxies)
 	p.mux.HandleFunc("PUT /panel/api/proxies/realm/{realm}", p.realmProxy)
 }
 
@@ -180,4 +181,30 @@ func (p *Panel) accountProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (p *Panel) assignAccountProxies(w http.ResponseWriter, r *http.Request) {
+	if !p.proxyReady(w) {
+		return
+	}
+	p.proxyAccountMu.Lock()
+	defer p.proxyAccountMu.Unlock()
+	p.reloadMu.Lock()
+	defer p.reloadMu.Unlock()
+
+	list := p.cfg.Pool.List()
+	accounts := make(map[string]string, len(list))
+	for _, account := range list {
+		accounts[account.UID] = account.Realm
+	}
+	assigned, err := p.cfg.ProxyPool.AssignUnbound(accounts)
+	if errors.Is(err, proxypool.ErrNoHealthyProxy) {
+		writeErr(w, http.StatusConflict, "没有可用代理，请先到代理池检测")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存代理分配失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
 }
