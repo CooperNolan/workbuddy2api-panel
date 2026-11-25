@@ -33,7 +33,12 @@ const visibleUIDs = () => [...tb.innerHTML.matchAll(/<tr[^>]+title="uid: ([^"]+)
 const statusOptions = () => Object.fromEntries(
   [...statusFilter.innerHTML.matchAll(/<option value="([^"]*)">([^<]+)<\/option>/g)].map(([, value, text]) => [value, text])
 );
+let storedPrefs = JSON.stringify({ accStatusFilter: '可用' });
 const ctx = {
+  localStorage: {
+    getItem: () => storedPrefs,
+    setItem: (_key, value) => { storedPrefs = value; },
+  },
   String, Number, Math, Date, Object, Array, Set, JSON, RegExp, console,
   document: { activeElement: null },
   $: id => ({ accBody: tb, accStatusFilter: statusFilter, accGroupActions: groupActions, accGroupScope: groupScope }[id] || null),
@@ -50,11 +55,14 @@ const ctx = {
   accGroupFilter: '', groupBatchAccounts: [],
 };
 vm.createContext(ctx);
+const prefs = src.slice(src.indexOf('const LS_PREF'), src.indexOf('let remarksCache'));
+const stateStart = src.indexOf('let accStatusFilter');
+const state = src.slice(stateStart, src.indexOf('\n', stateStart));
 const bindingStart = src.indexOf("if ($('accStatusFilter'))");
 const bindingEnd = src.indexOf('/* 实测上限标注', bindingStart);
 assert.ok(bindingStart >= 0 && bindingEnd > bindingStart, 'account filter bindings not found');
 const bindings = src.slice(bindingStart, bindingEnd);
-vm.runInContext([src.slice(s, e), bindings, 'this.render = renderAccounts; this.actions = GROUP_ACT;'].join('\n'), ctx);
+vm.runInContext([prefs, state, src.slice(s, e), bindings, 'this.render = renderAccounts; this.actions = GROUP_ACT;'].join('\n'), ctx);
 function selectStatus(value) {
   statusFilter.value = value;
   statusFilter.onchange({ currentTarget: statusFilter });
@@ -71,9 +79,13 @@ const rows = [
 ];
 
 ctx.render(rows);
+assert.strictEqual(statusFilter.value, '可用', '重新打开应恢复上次选择');
+assert.deepStrictEqual(visibleUIDs(), ['a1', 'c1']);
 assert.deepStrictEqual(statusOptions(), {
   '': '全部状态 (4)', '可用': '可用 (2)', '已暂停选号': '已暂停选号 (1)', '保留积分': '保留积分 (1)',
 });
+selectStatus('');
+assert.strictEqual(ctx.prefGet('accStatusFilter'), '', '选择全部状态应清除记忆');
 
 ctx.accGroupFilter = 'A';
 ctx.render(rows);
@@ -82,6 +94,7 @@ assert.deepStrictEqual(statusOptions(), {
   '': '全部状态 (2)', '可用': '可用 (1)', '已暂停选号': '已暂停选号 (1)', '保留积分': '保留积分 (0)',
 });
 selectStatus('已暂停选号');
+assert.strictEqual(ctx.prefGet('accStatusFilter'), '已暂停选号', '切换应保存选择');
 const mixedRealms = [...rows, { ...acct('a3', 'A'), realm: 'global' }];
 ctx.render(mixedRealms);
 assert.strictEqual(statusOptions()['可用'], '可用 (2)');

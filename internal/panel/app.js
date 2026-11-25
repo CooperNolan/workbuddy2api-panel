@@ -519,6 +519,7 @@ setTimeout(() => {
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
 let accRealmFilter = 'all';
+let accStatusFilter = prefGet('accStatusFilter');
 let lastAccountsList = [];
 // 分组筛选（issue #159）：'' = 全部分组。组内批量依据分区和分组。
 let accGroupFilter = '';
@@ -571,10 +572,9 @@ function renderAccounts(list) {
   const now = Date.now();
   const statuses = new Map(lastAccountsList.map(s => [s, accountStatus(s, now)]));
   const statusSelect = $('accStatusFilter');
-  const selectedStatus = statusSelect?.value || '';
   if (statusSelect) {
     const labels = new Set(Array.from(statuses.values(), s => s.label));
-    if (selectedStatus) labels.add(selectedStatus);
+    if (accStatusFilter) labels.add(accStatusFilter);
     const counts = new Map();
     for (const account of filtered) {
       const { label } = statuses.get(account);
@@ -583,18 +583,18 @@ function renderAccounts(list) {
     setHTML(statusSelect, '<option value="">全部状态 (' + filtered.length + ')</option>' +
       [...labels].sort((a, b) => a.localeCompare(b, 'zh')).map(label =>
         '<option value="' + esc(label) + '">' + esc(label) + ' (' + (counts.get(label) || 0) + ')</option>').join(''));
-    statusSelect.value = selectedStatus;
+    statusSelect.value = accStatusFilter;
   }
-  if (selectedStatus) filtered = filtered.filter(s => statuses.get(s).label === selectedStatus);
+  if (accStatusFilter) filtered = filtered.filter(s => statuses.get(s).label === accStatusFilter);
   // 组内批量只在「筛到某一组」时才露出来：全部分组下这几个按钮等于第二个「全部签到」，
   // 白占位还容易点错作用域。
   if ($('accGroupActions')) $('accGroupActions').hidden = !accGroupFilter;
-  if ($('accGroupScope')) $('accGroupScope').hidden = !selectedStatus;
+  if ($('accGroupScope')) $('accGroupScope').hidden = !accStatusFilter;
 
   if (!filtered.length) {
     if (!total) {
       setHTML(tb, '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>');
-    } else if (selectedStatus) {
+    } else if (accStatusFilter) {
       setHTML(tb, '<tr><td colspan="9"><div class="empty"><div class="big">当前筛选条件下没有匹配的账号</div></div></td></tr>');
     } else if (accGroupFilter) {
       setHTML(tb, '<tr><td colspan="9"><div class="empty"><div class="big">分组「' + esc(accGroupFilter) + '」下没有账号</div>在「备注」里给账号填上分组后就会出现在这里</div></td></tr>');
@@ -1126,7 +1126,11 @@ if ($('accGroupFilter')) {
   };
 }
 if ($('accStatusFilter')) {
-  $('accStatusFilter').onchange = () => renderAccounts(lastAccountsList);
+  $('accStatusFilter').onchange = e => {
+    accStatusFilter = e.currentTarget.value;
+    prefSet('accStatusFilter', accStatusFilter);
+    renderAccounts(lastAccountsList);
+  };
 }
 /* 组内批量（issue #159）：作用域由当前分区和分组决定，
    逐号打已有的单号接口——不新增批量端点，也不改调度器。签到跳过企业版/静态 Key
@@ -3962,7 +3966,7 @@ async function loadUsage() {
 
 if ($('btnUsage')) $('btnUsage').onclick = loadUsage;
 // 时间范围控件绑定：任何改动（预设切换 / 自定义起止）都重新拉一次用量。
-if ($('usRange')) trangeBind('usRange', loadUsage);
+if ($('usRange')) trangeBind('usRange', loadUsage, 'today');
 
 /* ── 积分构成 ─────────────────────────────────────────────────────── */
 // 套餐标签（后端 pool.ClassifyPlan 判定，unknown 不显示）：一眼看出该指望哪个号。
