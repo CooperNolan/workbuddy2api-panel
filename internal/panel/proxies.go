@@ -23,6 +23,7 @@ func (p *Panel) proxyRoutes() {
 	p.mux.HandleFunc("DELETE /panel/api/proxies/{id}", p.proxyDelete)
 	p.mux.HandleFunc("POST /panel/api/proxies/check", p.proxyCheck)
 	p.mux.HandleFunc("POST /panel/api/proxies/{id}/check", p.proxyCheck)
+	p.mux.HandleFunc("POST /panel/api/proxies/{id}/rebind", p.proxyRebindAccounts)
 	p.mux.HandleFunc("PUT /panel/api/proxies/health", p.proxyHealth)
 	p.mux.HandleFunc("PUT /panel/api/accounts/{uid}/proxy", p.accountProxy)
 	p.mux.HandleFunc("POST /panel/api/accounts/assign-proxies", p.assignAccountProxies)
@@ -181,6 +182,35 @@ func (p *Panel) accountProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (p *Panel) proxyRebindAccounts(w http.ResponseWriter, r *http.Request) {
+	if !p.proxyReady(w) {
+		return
+	}
+	var body struct {
+		TargetProxyID *string `json:"target_proxy_id"`
+	}
+	if !proxyBody(w, r, &body) {
+		return
+	}
+	if body.TargetProxyID == nil {
+		writeErr(w, http.StatusBadRequest, "缺少目标代理，解除绑定时请传空字符串")
+		return
+	}
+
+	p.proxyAccountMu.Lock()
+	defer p.proxyAccountMu.Unlock()
+	updated, err := p.cfg.ProxyPool.RebindAccounts(r.PathValue("id"), *body.TargetProxyID)
+	if errors.Is(err, proxypool.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "原代理或目标代理不存在")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存账号代理绑定失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": updated})
 }
 
 func (p *Panel) assignAccountProxies(w http.ResponseWriter, r *http.Request) {

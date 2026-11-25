@@ -533,6 +533,48 @@ func (m *Manager) Bind(uid string, b Binding) error {
 
 func (m *Manager) Unbind(uid string) error { return m.Bind(uid, Binding{Mode: "random"}) }
 
+// RebindAccounts moves explicit account bindings from sourceID to targetID.
+// An empty targetID removes those bindings and restores the normal default routing.
+func (m *Manager) RebindAccounts(sourceID, targetID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	source := Binding{Mode: "fixed", ProxyID: sourceID}
+	if err := m.validateBindingLocked(source); err != nil {
+		return 0, err
+	}
+	if sourceID == targetID {
+		return 0, nil
+	}
+	target := Binding{Mode: "fixed", ProxyID: targetID}
+	if targetID != "" {
+		if err := m.validateBindingLocked(target); err != nil {
+			return 0, err
+		}
+	}
+
+	d := m.copyLocked()
+	updated := 0
+	for uid, binding := range d.Bindings {
+		if binding != source {
+			continue
+		}
+		if targetID == "" {
+			delete(d.Bindings, uid)
+		} else {
+			d.Bindings[uid] = target
+		}
+		updated++
+	}
+	if updated == 0 {
+		return 0, nil
+	}
+	if err := m.commitLocked(d); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
 // AssignUnbound 为未指定出口的账号分配固定代理，accounts 是当前账号的 UID 到域的映射。
 func (m *Manager) AssignUnbound(accounts map[string]string) (int, error) {
 	m.mu.Lock()

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,6 +39,7 @@ func TestProxyAPIAuthenticationBindingAndRemoval(t *testing.T) {
 		{"DELETE", "proxies/missing"}, {"POST", "proxies/check"}, {"POST", "proxies/missing/check"},
 		{"PUT", "proxies/health"}, {"PUT", "accounts/u1/proxy"}, {"PUT", "proxies/realm/cn"},
 		{"POST", "accounts/assign-proxies"},
+		{"POST", "proxies/missing/rebind"},
 	} {
 		if got := call(route.method, route.path, "{}", "wrong"); got.Code != http.StatusUnauthorized {
 			t.Fatalf("unauthorized %s %s: %d", route.method, route.path, got.Code)
@@ -175,6 +178,56 @@ func TestAssignAccountProxiesBalancesExistingBindings(t *testing.T) {
 	if _, assigned := bindings["inherited"]; assigned || bindings["new"].ProxyID != results[1].ID {
 		t.Fatalf("realm default should stay in use and count toward its proxy load: %+v", bindings)
 	}
+
+	t.Run("rebind and unbind", func(t *testing.T) {
+		source, target := results[0].ID, results[1].ID
+		post := func(id, body string, status int, want string) {
+			t.Helper()
+			req := httptest.NewRequest(http.MethodPost, "/panel/api/proxies/"+id+"/rebind", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			p.ServeHTTP(rec, req)
+			if rec.Code != status || !strings.Contains(rec.Body.String(), want) {
+				t.Fatalf("rebind %s: %d %s, want %d %q", id, rec.Code, rec.Body.String(), status, want)
+			}
+		}
+		move := fmt.Sprintf(`{"target_proxy_id":%q}`, target)
+		unbind := `{"target_proxy_id":""}`
+		post(source, `{}`, http.StatusBadRequest, "")
+		post(source, `{"target_proxy_id":"missing"}`, http.StatusNotFound, "")
+
+		// A directory at the backup path forces the save to fail.
+		if err := os.Remove(path + ".bak"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path+".bak", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		post(source, move, http.StatusInternalServerError, "")
+		if got := manager.Snapshot().Bindings; !maps.Equal(got, bindings) {
+			t.Fatalf("failed save changed bindings: %+v", got)
+		}
+		if err := os.Remove(path + ".bak"); err != nil {
+			t.Fatal(err)
+		}
+
+		post(source, move, http.StatusOK, `"updated":10`)
+		post(source, move, http.StatusOK, `"updated":0`)
+		if got := manager.Snapshot(); got.Proxies[0].BoundCount != 0 || got.Proxies[1].BoundCount != 21 {
+			t.Fatalf("unexpected migration: %+v", got.Bindings)
+		}
+		post(target, unbind, http.StatusOK, `"updated":21`)
+		reloaded, err := proxypool.New(path, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reloaded.Close()
+		if got := reloaded.Snapshot(); len(got.Bindings) != 1 || got.Bindings["direct"].Mode != "direct" || got.Realms["global"] != fixed {
+			t.Fatalf("unexpected state after unbinding: %+v", got)
+		}
+		if rec := assign(); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"assigned":21`) {
+			t.Fatalf("reassign: %d %s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestProxyAPIRejectsOversizedBody(t *testing.T) {

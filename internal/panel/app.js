@@ -6060,6 +6060,8 @@ function renderProxies() {
   setHTML($('proxyBody'), list.length ? list.slice((proxyPage - 1) * 25, proxyPage * 25).map(p => {
     const [tone, text] = PROXY_STATES[p.status] || ['warn', p.status];
     const action = (type, label, disabled = false) => '<button class="icon ghost' + (type === 'remove' ? ' danger' : '') + '" data-proxy-action="' + type + '" data-id="' + esc(p.id) + '" title="' + esc(label) + '" aria-label="' + esc(label + ' ' + p.name) + '"' + (disabled ? ' disabled' : '') + '>' + proxyIcon(type) + '</button>';
+    const rebind = '<button type="button" class="xs" data-proxy-action="rebind" data-id="' + esc(p.id) +
+      '" aria-label="' + esc('切换绑定 ' + p.name) + '"' + (p.bound_count ? '' : ' disabled') + '>切换</button>';
     const exitNote = p.exit && p.exit.ip
       ? '<div class="note">出口 ' + esc(p.exit.ip) + ' · ' + esc([p.exit.country, ({residential:'住宅',datacenter:'机房'})[p.exit.ip_type] || ''].filter(Boolean).join(' ')) + (p.exit.isp ? ' · ' + esc(p.exit.isp) : '') + '</div>'
       : '';
@@ -6070,7 +6072,7 @@ function renderProxies() {
       '<td class="note">' + (p.checked_at && !p.checked_at.startsWith('0001-') ? esc(fmtLocalDateTime(p.checked_at)) : '—') + '</td>' +
       '<td class="proxy-error">' + esc(p.last_error || '—') + '</td><td class="num">' + p.bound_count + '</td>' +
       '<td><input type="checkbox" data-proxy-toggle="' + esc(p.id) + '" aria-label="' + esc('启用 ' + p.name) + '"' + (p.enabled ? ' checked' : '') + '></td>' +
-      '<td><div class="proxy-actions">' + action('check', '检测', p.checking) + action('edit', '编辑') + action('remove', p.bound_count ? '先解除账号绑定' : '删除', p.bound_count > 0) + '</div></td></tr>';
+      '<td><div class="proxy-actions">' + action('check', '检测', p.checking) + action('edit', '编辑') + rebind + action('remove', p.bound_count ? '先解除账号绑定' : '删除', p.bound_count > 0) + '</div></td></tr>';
   }).join('') : '<tr><td colspan="9"><div class="empty">代理池为空</div></td></tr>');
   // realm 级默认出口（issue #39 P3）：选项集与账号行下拉同源。
   const realmOpts = '<option value="random">默认随机</option><option value="direct">直连</option>' +
@@ -6138,6 +6140,17 @@ $('proxyBody').addEventListener('click', async ev => {
   const { id, proxyAction: action } = button.dataset;
   const item = proxyData?.proxies.find(p => p.id === id);
   if (!item) return;
+  if (action === 'rebind') {
+    const veil = $('proxyRebindVeil'), target = $('proxyRebindTarget');
+    veil.dataset.sourceId = id;
+    $('proxyRebindNote').textContent = '将修改「' + item.name + '」当前绑定的 ' + item.bound_count + ' 个账号。';
+    target.innerHTML = '<option value="" disabled selected>请选择操作</option><option value="unbind">解除绑定</option>' +
+      proxyData.proxies.filter(p => p.id !== id).map(p => '<option value="fixed:' + esc(p.id) + '">' +
+        esc(p.name + ' · ' + (PROXY_STATES[p.status]?.[1] || p.status)) + '</option>').join('');
+    veil.classList.add('on');
+    target.focus();
+    return;
+  }
   if (action === 'edit') {
     proxyEditID = id;
     $('proxyName').value = item.name;
@@ -6156,6 +6169,28 @@ $('proxyBody').addEventListener('click', async ev => {
   } catch (e) { toast(e.message, 'err'); }
   finally { button.disabled = false; }
 });
+$('proxyRebindCancel').onclick = () => $('proxyRebindVeil').classList.remove('on');
+$('proxyRebindForm').onsubmit = async e => {
+  e.preventDefault();
+  const veil = $('proxyRebindVeil'), target = $('proxyRebindTarget');
+  const save = $('proxyRebindSave'), cancel = $('proxyRebindCancel');
+  if (save.disabled || !target.value) return;
+  const targetID = target.value === 'unbind' ? '' : target.value.slice('fixed:'.length);
+  save.disabled = cancel.disabled = target.disabled = true;
+  try {
+    const { updated } = await api('proxies/' + encodeURIComponent(veil.dataset.sourceId) + '/rebind', {
+      method: 'POST', body: JSON.stringify({ target_proxy_id: targetID }),
+    });
+    veil.classList.remove('on');
+    const action = targetID ? '切换代理' : '解除代理绑定';
+    toast(updated ? '已为 ' + updated + ' 个账号' + action : '该代理已没有绑定账号', updated ? 'ok' : 'warn');
+    await loadOverview(true);
+    renderProxies();
+  } catch (e) {
+    if (e.status === 401) veil.classList.remove('on');
+    toast('切换失败：' + e.message, 'err');
+  } finally { save.disabled = cancel.disabled = target.disabled = false; }
+};
 $('proxyBody').addEventListener('change', async ev => {
   const input = ev.target;
   if (!input.matches('[data-proxy-toggle]')) return;
